@@ -1,0 +1,198 @@
+---
+title: "Microarray_skin_cells"
+author: "Guadalupe Rivera Torruco"
+date: "4/16/2021"
+output: pdf_document
+---
+
+## Analysis of Expression profiling by array
+
+Series: GSE10433
+Organism: Human
+Tissue: Human skin
+Overall design: 6 baseline/before isotretinoin and 6 after 1-week isotretinoin treatment.
+Platform: Affymetrix Human Genome U133A 2.0 Array GPL571
+
+```{r Suppress warning messages}
+options(warn=-1)
+```
+
+```{r Install and load R base packages, message=FALSE}
+packages <- c("BiocManager",
+              "grid",
+              "gridExtra",
+              "RColorBrewer") 
+
+for (i in packages){
+  if(!is.element(i, .packages(all.available = TRUE))){
+    install.packages(i)
+  }
+  library(i, character.only = TRUE)
+}
+```
+
+```{r Install and load Bioconductor packages, message=FALSE}
+packages_bioconductor <- c("limma",
+                           "affy",
+                           "genefilter",
+                           "oligo",
+                           "GEOquery",
+                           "hgu133a.db") 
+
+#Check Bioconductor packages
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install(packages_bioconductor, force = TRUE, ask = FALSE)
+
+multi_library <- function(packages){
+  for(i in packages){
+    library(i, character.only = TRUE)
+  }
+}
+
+multi_library(packages_bioconductor)
+```
+```{r Select figure dimensions}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.align = "center") #check it is not working
+knitr::opts_knit$set(global.par = TRUE) #check it is not working
+```
+Affimetryx platform outputd .CEL files
+
+```{r Directory with .cel files}
+dir_files <- "C:/Users/lupit/OneDrive/Microarray_skin_cells/Data/"
+celfiles <-list.celfiles(dir_files)
+celfiles
+```
+Once having the file names, we create the absolute paths joining the link to .cel files (dir_files) and its names (celfiles), then we read it with the Affy function read.celfiles(link)
+```{r Load the rawdata, message=FALSE}
+rawData <- read.celfiles(paste(dir_files, celfiles, sep="")) 
+#Inspect class
+class(rawData)
+rawData
+head(intensity(rawData))
+```
+
+```{r Add annotation to phenoData}
+ph = rawData@phenoData
+ph@data[,1] = c("control_1", "control_2", "control_3", "control_4", "control_5", "control_6", "tx_1", "tx_2","tx_3","tx_4","tx_5","tx_6")
+#Names of the columns in varLabels: index
+ph$index
+#Look all data in the dataframe
+ph@data
+```
+
+```{r Check chips integrity}
+op = par(mfrow = c(1,2)) #NOT WORKINGG!!!
+for (i in 1:2){oligo::image(rawData,which=i,main=ph@data$index[i])}
+```
+
+```{r, figures-side, fig.width = 5, fig.show="hold", out.width="50%"}
+#par(mar = c(4, 4, .1, .1))
+#image(rawData[,1])
+#image(rawData[,2])
+ph@data[,1]
+```
+
+```{r Intesity distribution}
+usr.col<-brewer.pal(9,"Set1")
+mycols<-rep(usr.col, each=6)
+hist(rawData, col=mycols, main="Raw data", target="core") 
+legend("topright", ph@data[,1], lty=rep(1,length(celfiles),col=mycols, cex=0.2))
+
+
+```
+
+```{r Arrange the list of plots into one}
+boxplot(rawData, xex=0.2, ylab="log2 Intensity", xlab="Samples",names=ph@data[,1],
+        col=mycols, main="Raw data")                               
+```
+
+
+```{r Normalization and background correction}
+eset<-rma(rawData)
+boxplot(eset, xex=0.2, ylab="log2 Intensity", xlab="Samples",names=ph@data[,1],
+        col=mycols, main="Raw data")
+```
+
+
+```{r Expression matrix}
+eDat<-exprs(eset)
+#look dimensions
+dim(eDat)
+```
+Filter out genes with low expression with genefilter package
+```{r }
+f1<-pOverA(0.5, log2(100))
+
+#Intensity difference over log2(1.5)
+f2<-function(x) (diff(range(x, na.rm=T))>log2(1.5))
+ff<-filterfun(f1,f2)
+
+#file with filtered data
+index<-genefilter(eDat, ff)
+sum(index)
+```
+
+```{r Expression matrix with filtered data}
+eDatSet <- eDat[index,]
+dim(eDatSet)
+```
+
+```{r }
+head(eDatSet)
+```
+Then, we calculate genes differentially expressed between conditions, using tools from limma package
+```{r Differentially expressed genes}
+TS<-gl(2,6, labels=c("control","treatment"))
+#linear model
+design<-model.matrix(~TS) 
+colnames(design)<-c("control", "contrast")
+design
+```
+After creating our lineal model, we train the eDatset with it. Then, apply Bayes algorithm to obtain statistical values of the predictions. Finally, we can filter only the genes that are statistically different p>0.05 and with a limit fold change (lfc) of log2(2) to ensure high confidence in the selected genes.
+```{r }
+#Fitting model
+fit <- lmFit(eDatSet, design) #estimaciÃ³n de los parametros de ajuste lineal
+# Bayesin statistics
+fit <- eBayes(fit)
+# keep genes with p>0.05 and lfc>2
+top_genes <-topTable(fit, coef="contrast", number=nrow(eDatSet), adjust="fdr", p.value=0.05, lfc=log2(2))
+dim(top_genes)
+```
+
+```{r }
+top_genes
+```
+
+Finally we retrieve the names of the genes with the annotation package "hgu133a.db"
+```{r Annotating top genes}
+rma <- top_genes
+probes = row.names(rma)
+symbols <- unlist(mget(probes, hgu133aSYMBOL, ifnotfound = NA))
+Entrez_ID <-  unlist(mget(probes, hgu133aENTREZID, ifnotfound = NA))
+rma <- cbind(symbols, Entrez_ID, rma)
+```
+
+```{r Top expressed genes}
+rma
+```
+
+```{r Substract gene expression for each sample}
+rn<-rownames(top_genes)
+dat.s<-eDatSet[rn,]
+rownames(dat.s) <- rma$symbols
+```
+
+```{r Check dataframe with only diff expressed genes}
+dat.s
+```
+We can creato some simple plots with R base boxplot, like this:
+```{r TMPRSS4 expression, fig.width = 10}
+par(mfrow = c(1,2))
+boxplot(dat.s[1,1:6], dat.s[1,6:12], names = c("Control", "Treatment"), ylab="exprs")
+title("Expression of TMPRSS4 after tretinoin treatment")
+
+boxplot(dat.s[2,1:6], dat.s[2,6:12], names = c("Control", "Treatment"), ylab="exprs")
+title("Expression of LCN2 after tretinoin treatment")
+```
+
